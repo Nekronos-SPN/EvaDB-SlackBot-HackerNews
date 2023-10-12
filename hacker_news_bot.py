@@ -153,7 +153,7 @@ def create_sql_query(message, say):
             number_entires += 1
         say("Number of results: ", number_entries) 
     except Exception as e:
-        say(f""" Sorry, I could not convert your request to a SQL query :( \n Error: {str(e)}""")
+        say(f""" Sorry, I could not convert your request to a SQL query :( \nError: {str(e)}\nRelated Query: {sql_query}""")
 
             
 
