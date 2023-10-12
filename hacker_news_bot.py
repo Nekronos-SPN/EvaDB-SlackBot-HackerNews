@@ -145,15 +145,18 @@ def create_sql_query(message, say):
         """)
         
     # Execute the query
-    number_entries = 0
     try:
         result = cursor.query(sql_query).df()
+        number_entries = 0
         for index, row in result.iterrows():
             say(f"{row['hacker_news_data.title']}: {row['hacker_news_data.url']}")
-            number_entires += 1
-        say("Number of results: ", number_entries) 
+            number_entries += 1
+        
+        say(f"Number of results: {number_entries}") 
     except Exception as e:
-        say(f""" Sorry, I could not convert your request to a SQL query :( \nError: {str(e)}\nRelated Query: {sql_query}""")
+        say(f""" Sorry, I could not convert your request to a SQL query :( \nError: {str(e)}""")
+
+    say(f"Related Query: {sql_query}")
 
             
 
