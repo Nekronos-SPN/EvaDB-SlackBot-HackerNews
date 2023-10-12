@@ -6,8 +6,15 @@ import argparse, json
 import os, sys
 
 import evadb, openai
+import requests
+
 # Connect to EvaDB and get a database cursor
 cursor = evadb.connect().cursor()
+cursor.query("""
+    CREATE DATABASE IF NOT EXISTS sqlite_data WITH ENGINE = 'sqlite', PARAMETERS = {
+     "database": ":memory:"
+    };
+""").df()
 
 JSON_FILE_PATH = None
 
@@ -21,10 +28,76 @@ def load_api_keys_from_json(file_path):
                 os.environ[key] = value
     except FileNotFoundError:
         print(f"File '{file_path}' not found.")
-        sys.exit();
+        sys.exit()
     except json.JSONDecodeError:
         print(f"Error parsing JSON in '{file_path}'.")
-        sys.exit();
+        sys.exit()
+
+# Fetch data from a URL and return it as a JSON object
+def fetch_json_data(url):
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = json.loads(response.text)
+        return data
+    else:
+        return None
+
+
+# Fetch and populate database
+def populate_table(url):
+    # Drop the existing table if it exists
+    cursor.query("DROP TABLE IF EXISTS hacker_news_data").df()
+
+    # Create a table for storing Hacker News data
+    cursor.query("""
+        CREATE TABLE hacker_news_data (
+            id INTEGER UNIQUE,
+            deleted INTEGER,
+            type TEXT(7),
+            by TEXT(255),
+            time INTEGER,
+            text TEXT(65535),
+            dead INTEGER,
+            parent INTEGER,
+            poll INTEGER,
+            kids NDARRAY INT32(ANYDIM),
+            url TEXT(255),
+            score INTEGER,
+            title TEXT(255),
+            parts NDARRAY INT32(ANYDIM),
+            descendants INTEGER
+        )
+    """).df()
+
+    data = fetch_json_data(url)
+    if data:
+        for item_id in data:
+            item_details = fetch_json_data(f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json?print=pretty")
+            if item_details:
+                # Process the data and insert it
+                cursor.query(f'''
+                    INSERT INTO hacker_news_data (
+                        id, deleted, type, by, time, text, dead, parent, poll, kids, url, score, title, parts, descendants
+                    ) VALUES (
+                        {item_id},
+                        {1 if item_details.get('deleted', False) else 0},
+                        "{item_details.get('type', 'NA').replace('"', "'").replace(";", "")}",
+                        "{item_details.get('by', 'NA').replace('"', "'").replace(";", "")}",
+                        {item_details.get('time', 0)},
+                        "{item_details.get('text', 'NA').replace('"', "'").replace(";", "")}",
+                        {1 if item_details.get('dead', False) else 0},
+                        {item_details.get('parent', 0)},
+                        {item_details.get('poll', 0)},
+                        {json.dumps(item_details.get('kids', []))},
+                        "{item_details.get('url', 'NA').replace('"', "'").replace(";", "")}",
+                        {item_details.get('score', 0)},
+                        "{item_details.get('title', 'NA').replace('"', "'").replace(";", "")}",
+                        {json.dumps(item_details.get('parts', []))},
+                        {item_details.get('descendants', 0)}
+                    )
+                '''
+                ).df()
+
 
 def parse_arguments():
     # JSON for API Keys 
@@ -35,37 +108,92 @@ def parse_arguments():
     args = parser.parse_args()
     JSON_FILE_PATH = args.input
 
-
 # Get the API tokens for config
 parse_arguments()
 load_api_keys_from_json(JSON_FILE_PATH)
 
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
+def ask_gpt(text_query):
+    return  openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": f"{text_query}"}]
+                ).choices[0].message.content
+
+# Createa a query to the database
+def create_sql_query(message, say):
+    sql_query = ask_gpt(f"""Using this table schema:
+            CREATE TABLE hacker_news_data (
+                id INTEGER UNIQUE,
+                deleted INTEGER,
+                type TEXT(7),
+                by TEXT(255),
+                time INTEGER,
+                text TEXT(65535),
+                dead INTEGER,
+                parent INTEGER,
+                poll INTEGER,
+                kids NDARRAY INT32(ANYDIM),
+                url TEXT(255),
+                score INTEGER,
+                title TEXT(255),
+                parts NDARRAY INT32(ANYDIM),
+                descendants INTEGER
+            )
+            Create a query responding to the users request: {message["text"]}
+            Answer only th query in plain text, nothing else
+        """)
+        
+    # Execute the query
+    number_entries = 0
+    try:
+        result = cursor.query(sql_query).df()
+        for index, row in result.iterrows():
+            say(f"{row['hacker_news_data.title']}: {row['hacker_news_data.url']}")
+            number_entires += 1
+        say("Number of results: ", number_entries) 
+    except Exception as e:
+        say(f""" Sorry, I could not convert your request to a SQL query :( \n Error: {str(e)}""")
+
+            
+
 # Initialize the bot
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
+ongoing_query = False
+
 # Respond to any messages
 @app.message(".*")
 def message_hello(message, say):
-    text = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", 
-            messages=[{"role": "user", "content": f"""
+    global ongoing_query
+
+    # Check if the user asks for a SQL query
+    if(ongoing_query and message["text"] == "NEW"):
+        ongoing_query = False
+    
+    # If there is an ongoing query, create a sql statement
+    if (ongoing_query):
+        create_sql_query(message, say);
+    else:
+        text = ask_gpt(f"""
             {message["text"]} (Answer as a chatbot dedicated to help user browse the HackerNews Webpage. The user can interact with you reacting to the message you are about to respond, the possible reactions are:
-            1️⃣ : Top stories
+            1️⃣  Top stories
             2️⃣:: New stories
             3️⃣:: Best stories
             4️⃣:: Latest asks
             5️⃣:: Latest shows
             6️⃣:: Latest jobs
-            Please, state explicitly that they have to react to the message you sent)"""}]
-            ).choices[0].message.content
-    say(text)
+            Please, state explicitly that they have to react to the message you sent)
+        """)
+
+        # Tell the user to choose an option
+        say(text)
     
 
 @app.event("reaction_added")
 def handle_reaction_added(event, say):
+    global ongoing_query
 
     item = event["item"]
 
@@ -81,16 +209,41 @@ def handle_reaction_added(event, say):
     if last_message_ts != message_ts:
         return
 
-    action_mapping = {
-        "one": "Search top stories",
-        "two": "Search new stories",
-        "three": "Search best stories",
-        "four": "Search latest ask",
-        "five": "Search latest show",
-        "six": "Search latest job",
+    reaction_mapping = {
+        "one": "top stories",
+        "two": "new stories",
+        "three": "best stories",
+        "four": "latest ask",
+        "five": "latest show",
+        "six": "latest job"
     }
+    text = f"""
+        The user chose {reaction_mapping[event["reaction"]]}.
+        Tell them that its going to take a while to load the data and provide them with a random fun fact (please be original) in a separate paragraph.
+        """
+    # Make the mean time more amussing
+    say(ask_gpt(text))
 
-    say(action_mapping[event["reaction"]])
+    url_mapping = {
+        "one": "https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty",
+        "two": "https://hacker-news.firebaseio.com/v0/newstories.json?print=pretty",
+        "three": "https://hacker-news.firebaseio.com/v0/beststories.json?print=pretty",
+        "four": "https://hacker-news.firebaseio.com/v0/askstories.json?print=pretty",
+        "five": "https://hacker-news.firebaseio.com/v0/showstories.json?print=pretty",
+        "six": "https://hacker-news.firebaseio.com/v0/jobstories.json?print=pretty"
+    }
+    # Insert all values from HN into database
+    url = url_mapping[event["reaction"]]
+    if (url):
+        ongoing_query = True
+        populate_table(url)
+        say(ask_gpt("Briefly tell the user that the data is ready, you will only show 5 entries from the hundreds you have"))
+        preview = cursor.query("SELECT title, url FROM hacker_news_data LIMIT 5").df()
+        for index, row in preview.iterrows():
+            say(f"{row['hacker_news_data.title']}: {row['hacker_news_data.url']}")
+        say(ask_gpt("Let the user know that he can manipulate all the data, he just needs to tell you what he wants to do"))
+        say("Please type NEW to reset data")
+
 
 if __name__ == "__main__":
 
