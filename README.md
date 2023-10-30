@@ -1,4 +1,4 @@
-# Slack-HackerNewsBot
+# EvaDB-SlackBot-HackerNews 
 Slack NewsBot is an intelligent chatbot designed to bring daily news updates directly to your Slack workspace. Powered by natural language processing and personalized interactions, this chatbot not only keeps your team informed but also engages in friendly conversations.
 
 Usage: python hacker_news_bot.py -i api_keys.json 
