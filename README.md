@@ -29,7 +29,7 @@ Make sure you have a valid api_keys.json file with the following structure:
 - Slack Integration: Slackbot
 - AI Stack and Relational Storage: EvaDB
 - Hugging Face's Llama model for text summarization
-- 
+  
 ## Features
 - Fetch and display Hacker News stories.
 - Engage in interactive conversations with users.
