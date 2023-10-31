@@ -6,7 +6,10 @@ import argparse, json
 import os, sys
 
 import evadb, openai
+
 import requests
+from requests_html import HTMLSession
+from bs4 import BeautifulSoup
 
 # Connect to EvaDB and get a database cursor
 cursor = evadb.connect().cursor()
@@ -16,6 +19,10 @@ cursor.query("""
     };
 """).df()
 
+# Stablish an HTML agent
+session = HTMLSession()
+
+# Create a function for the text summarizer
 cursor.query("""
     CREATE FUNCTION IF NOT EXISTS TextSummarizer
     TYPE HuggingFace
@@ -63,7 +70,7 @@ def populate_table(url):
             type TEXT(7),
             by TEXT(255),
             time INTEGER,
-            text TEXT(65535),
+            text TEXT(ANYDIM),
             dead INTEGER,
             parent INTEGER,
             poll INTEGER,
@@ -72,38 +79,44 @@ def populate_table(url):
             score INTEGER,
             title TEXT(255),
             parts NDARRAY INT32(ANYDIM),
-            descendants INTEGER
+            descendants INTEGER,
+            content TEXT(ANYDIM)
         )
     """).df()
 
     data = fetch_json_data(url)
     if data:
+        # Data limiter
+        LIMIT = 10
         for item_id in data:
             item_details = fetch_json_data(f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json?print=pretty")
             if item_details:
                 # Process the data and insert it
                 cursor.query(f'''
                     INSERT INTO hacker_news_data (
-                        id, deleted, type, by, time, text, dead, parent, poll, kids, url, score, title, parts, descendants
+                        id, deleted, type, by, time, text, dead, parent, poll, kids, url, score, title, parts, descendants, content
                     ) VALUES (
                         {item_id},
                         {1 if item_details.get('deleted', False) else 0},
                         "{item_details.get('type', 'NA').replace('"', "'").replace(";", "")}",
                         "{item_details.get('by', 'NA').replace('"', "'").replace(";", "")}",
                         {item_details.get('time', 0)},
-                        "{item_details.get('text', 'NA').replace('"', "'").replace(";", "")}",
+                        "{BeautifulSoup(item_details.get('text', 'Empty Text'), "html.parser").text.replace('"', "'").replace(";", "")}",
                         {1 if item_details.get('dead', False) else 0},
                         {item_details.get('parent', 0)},
                         {item_details.get('poll', 0)},
                         {json.dumps(item_details.get('kids', []))},
                         "{item_details.get('url', 'NA').replace('"', "'").replace(";", "")}",
                         {item_details.get('score', 0)},
-                        "{item_details.get('title', 'NA').replace('"', "'").replace(";", "")}",
+                        "{item_details.get('title', 'Empty Text').replace('"', "'").replace(";", "")}",
                         {json.dumps(item_details.get('parts', []))},
-                        {item_details.get('descendants', 0)}
-                    )
+                        {item_details.get('descendants', 0)},
+                        "{" ".join(BeautifulSoup(session.get(item_details.get('url')).text, "html.parser").text.replace('"', "'").replace(";", "").split()) if item_details.get('url') != None else 'Empty Text'}")
                 '''
                 ).df()
+                if LIMIT == 0:
+                    break
+                LIMIT -= 1
 
 
 def parse_arguments():
@@ -137,9 +150,8 @@ def create_sql_query(message, say):
         JOIN LATERAL
         SEGMENT()
         AS
-        TextSummarizer(text):
+        TextSummarizer(text) (Has to always be excuted for one item using LIMIT, also it can't be used with the keyword AS)
         (You cannot use other functions outside of the defined previously (eg. LOWER()))
-        (Use TextSummarizer as shown, do not change its arguments)
     """
     sql_query = ask_gpt(f"""Using this table schema:
             CREATE TABLE hacker_news_data (
@@ -148,7 +160,7 @@ def create_sql_query(message, say):
                 type TEXT(7),
                 by TEXT(255),
                 time INTEGER,
-                text TEXT(65535),
+                text TEXT(ANYDIM),
                 dead INTEGER,
                 parent INTEGER,
                 poll INTEGER,
@@ -157,30 +169,37 @@ def create_sql_query(message, say):
                 score INTEGER,
                 title TEXT(255),
                 parts NDARRAY INT32(ANYDIM),
-                descendants INTEGER
+                descendants INTEGER,
+                content TEXT(ANYDIM)
             )
             The syntax you can use only contains:
             {evaql_syntax}
             Create a query responding to the users request: {message["text"]}
-            Answer only th query in plain text, nothing else
+            Do not use WHERE id = x unles the id is specifiyed explicitly by the user.
+            Answer only the query in plain text, nothing else.
+            If you can't create a query, just respond NONE
         """)
         
     # Execute the query
     try:
-        result = cursor.query(sql_query).df()
-        number_entries = 0
-        for index, row in result.iterrows():
-            text_row = ""
-            for col in result.columns:
-                text_row += f"{col}: {row[col]} "
-            say(text_row)
-            number_entries += 1
-        
-        say(f"Number of results: {number_entries}") 
+        if (sql_query != "NONE"):
+            result = cursor.query(sql_query).df()
+            number_entries = 0
+            # Print the query
+            for index, row in result.iterrows():
+                text_row = ""
+                for col in result.columns:
+                    text_row += f"*{col[col.find('.')+1:].capitalize().replace('_', ' ')}*: {row[col]} "
+                say(text_row)
+                number_entries += 1
+            
+            say(f"Number of results: {number_entries}") 
+        else:
+            say(f""" Sorry, I could not convert your request to a SQL query :(""")
     except Exception as e:
         say(f""" Sorry, I could not convert your request to a SQL query :( \nError: {str(e)}""")
-
     say(f"Related Query: {sql_query}")
+
 
             
 
@@ -205,12 +224,12 @@ def message_hello(message, say):
     else:
         text = ask_gpt(f"""
             {message["text"]} (Answer as a chatbot dedicated to help user browse the HackerNews Webpage. The user can interact with you reacting to the message you are about to respond, the possible reactions are:
-            1️⃣  Top stories
-            2️⃣:: New stories
-            3️⃣:: Best stories
-            4️⃣:: Latest asks
-            5️⃣:: Latest shows
-            6️⃣:: Latest jobs
+            1️⃣: Tp stories
+            2️⃣:New stories
+            3️⃣:Best stories
+            4️⃣:Latest asks
+            5️⃣:Latest shows
+            6️⃣:Latest jobs
             Please, state explicitly that they have to react to the message you sent)
         """)
 
