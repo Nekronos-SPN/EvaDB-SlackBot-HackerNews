@@ -16,6 +16,13 @@ cursor.query("""
     };
 """).df()
 
+cursor.query("""
+    CREATE FUNCTION IF NOT EXISTS TextSummarizer
+    TYPE HuggingFace
+    TASK 'summarization'
+    MODEL 'facebook/bart-large-cnn'
+""").df()
+
 JSON_FILE_PATH = None
 
 # Load API KEYS from json file
@@ -122,6 +129,18 @@ def ask_gpt(text_query):
 
 # Createa a query to the database
 def create_sql_query(message, say):
+    evaql_syntax = """
+        SELECT
+        FROM
+        WHERE
+        ORDER BY
+        JOIN LATERAL
+        SEGMENT()
+        AS
+        TextSummarizer(text):
+        (You cannot use other functions outside of the defined previously (eg. LOWER()))
+        (Use TextSummarizer as shown, do not change its arguments)
+    """
     sql_query = ask_gpt(f"""Using this table schema:
             CREATE TABLE hacker_news_data (
                 id INTEGER UNIQUE,
@@ -140,6 +159,8 @@ def create_sql_query(message, say):
                 parts NDARRAY INT32(ANYDIM),
                 descendants INTEGER
             )
+            The syntax you can use only contains:
+            {evaql_syntax}
             Create a query responding to the users request: {message["text"]}
             Answer only th query in plain text, nothing else
         """)
@@ -149,7 +170,10 @@ def create_sql_query(message, say):
         result = cursor.query(sql_query).df()
         number_entries = 0
         for index, row in result.iterrows():
-            say(f"{row['hacker_news_data.title']}: {row['hacker_news_data.url']}")
+            text_row = ""
+            for col in result.columns:
+                text_row += f"{col}: {row[col]} "
+            say(text_row)
             number_entries += 1
         
         say(f"Number of results: {number_entries}") 
