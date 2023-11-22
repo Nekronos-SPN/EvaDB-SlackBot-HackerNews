@@ -44,6 +44,11 @@ Make sure you have a valid api_keys.json file with the following structure:
 4. Create an API key file (api_keys.json) with your tokens.
 5. Run the bot using the provided command.
 
+## Example query
+```sql
+        SELECT id, title, by, kids FROM hacker_news_data.items;
+```
+
 ## Disclaimer
 This is project is a PoC, it is not meant to be used in a slack workspace. The bot is poorly optimized and will have a slow performance on a real workspace.
 Also, this project uses third-party APIs and tools, including the Hacker News API, Slack API, and OpenAI's GPT model. Make sure to comply with their terms of use and policies when using this bot.
