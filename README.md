@@ -46,7 +46,7 @@ Make sure you have a valid api_keys.json file with the following structure:
 
 ## Example query
 ```sql
-        SELECT id, title, by, kids FROM hacker_news_data.items;
+SELECT id, title, by, kids FROM hacker_news_data.items;
 ```
 
 ## Disclaimer
